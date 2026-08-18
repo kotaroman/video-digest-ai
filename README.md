@@ -52,18 +52,14 @@ ollama list
 ollama pull qwen3:8b
 ```
 
-## 6. Python仮想環境
+## 6. Python仮想環境とインストール
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+.venv/bin/pip install -r requirements.txt
 ```
 
-## 7. インストール
-
-```bash
-pip install -r requirements.txt
-```
+以降の実行は付属の `./summarize` ランチャーが venv の Python を自動で使うため、`source .venv/bin/activate` は不要です。
 
 ### WSL + NVIDIA GPU で faster-whisper を動かす際の注意
 
@@ -71,10 +67,10 @@ pip install -r requirements.txt
 - WSL内にLinux版NVIDIAドライバや `nvidia-cuda-toolkit` パッケージを入れないでください(WSLのGPUパススルーと競合します)。
 - RTX 50系 (Blackwell) では `ctranslate2>=4.6.0` が必要です(requirements.txt で指定済み)。
 
-## 8. 実行
+## 7. 実行
 
 ```bash
-python summarize_video.py input.mp4 --minutes 10
+./summarize input/video.mp4 --minutes 10
 ```
 
 完了すると `output/summary_10min.mp4` が生成されます。
@@ -98,7 +94,7 @@ python summarize_video.py input.mp4 --minutes 10
 ### goal で判断基準を変える
 
 ```bash
-python summarize_video.py input.mp4 --minutes 10 \
+./summarize input/video.mp4 --minutes 10 \
   --goal "家庭菜園初心者に役立つ説明、実演、結果を優先する"
 ```
 
@@ -124,7 +120,7 @@ output/
 Windowsのファイルは WSL から `/mnt/c/...` で読めます:
 
 ```bash
-python summarize_video.py "/mnt/c/Users/xxx/Videos/video.mp4"
+./summarize "/mnt/c/Users/xxx/Videos/video.mp4"
 ```
 
 ただし `/mnt/c` 経由のI/Oは遅いため、長時間動画はWSL側ファイルシステムへコピーしてから処理する方が高速です:
@@ -132,7 +128,7 @@ python summarize_video.py "/mnt/c/Users/xxx/Videos/video.mp4"
 ```bash
 mkdir -p ~/videos
 cp /mnt/c/Users/xxx/Videos/video.mp4 ~/videos/
-python summarize_video.py ~/videos/video.mp4
+./summarize ~/videos/video.mp4
 ```
 
 ## 処理の流れ
