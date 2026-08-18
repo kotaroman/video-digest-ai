@@ -154,6 +154,8 @@ def run_pipeline(config: Config) -> Path:
         meta.mark_done("transcript", transcript_params)
     segments = transcript["segments"]
     log(f"Whisper segments: {len(segments)}")
+    # 再利用時にも気付けるよう、転写のたびではなくここでチェックする
+    transcription.check_speech_density(config.video_duration, segments)
 
     # --- ブロック化 ---
     log("")

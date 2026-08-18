@@ -75,10 +75,14 @@ def detect_nvenc() -> bool:
 
 
 def _video_encode_args(use_nvenc: bool) -> list[str]:
+    # -pix_fmt yuv420p: 10-bit HDR 入力 (スマホの HEVC Main 10 等) を
+    # そのまま渡すと h264_nvenc が CreateInputBuffer failed で失敗するため、
+    # 8-bit へ明示的に変換する (8-bit 入力には影響しない)
     if use_nvenc:
         return ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
-                "-cq", "23", "-b:v", "0"]
-    return ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+                "-cq", "23", "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "23",
+            "-pix_fmt", "yuv420p"]
 
 
 def _cut_one(input_path: Path, start: float, duration: float,

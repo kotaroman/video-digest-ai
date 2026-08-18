@@ -260,6 +260,26 @@ def _transcribe_chunked(state: _ModelState, config,
     return segments, language
 
 
+def check_speech_density(duration: float, segments: list[dict]) -> None:
+    """検出された発話が動画長に対して極端に少ない場合に警告する。
+
+    音量が小さすぎる録音や発話のない動画では VAD がほぼ全区間を落とし、
+    数秒のダイジェストが黙って生成されてしまうため、原因の見当を伝える。
+    """
+    if duration <= 600:
+        return
+    speech_total = sum(s["end"] - s["start"] for s in segments)
+    if speech_total >= 60 and speech_total >= duration * 0.02:
+        return
+    pct = speech_total / duration * 100
+    warn(
+        f"検出された発話が動画全体の {pct:.1f}% ({speech_total:.0f} 秒) しかありません。\n"
+        f"  音声レベルが低すぎるか、発話がほとんど含まれていない可能性があります。\n"
+        f"  動画を再生して音声を確認してください。"
+        f"ダイジェストは検出できた発話部分のみから生成されます。"
+    )
+
+
 def _write_transcript_txt(path, segments: list[dict]) -> None:
     """人間が確認しやすいテキスト形式を出力する"""
     lines = []
