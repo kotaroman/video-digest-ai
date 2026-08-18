@@ -22,11 +22,14 @@ class Config:
     goal: str = ""
     ollama_url: str = DEFAULT_OLLAMA_URL
     score_batch_size: int = 6
+    mode: str = "speech"        # speech / uniform / timelapse
+    clip_seconds: float = 30.0  # uniform モードのクリップ長
 
     # 環境チェックで決まる実行時の値
     use_nvenc: bool = False
     use_cuda: bool = False
     video_duration: float = 0.0
+    has_audio: bool = True
 
     @property
     def target_seconds(self) -> float:
@@ -36,7 +39,10 @@ class Config:
     def summary_path(self) -> Path:
         m = self.minutes
         label = str(int(m)) if float(m).is_integer() else f"{m:g}"
-        return self.output_dir / f"summary_{label}min.mp4"
+        # speech モードの出力を上書きしないよう、他モードはファイル名で区別する
+        if self.mode == "speech":
+            return self.output_dir / f"summary_{label}min.mp4"
+        return self.output_dir / f"summary_{self.mode}_{label}min.mp4"
 
     # --- 中間ファイルのパス ---
     @property

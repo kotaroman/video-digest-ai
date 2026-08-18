@@ -1,6 +1,35 @@
 # 目標時間に合わせた重要区間の選択 (ナップサック DP + 補正)
 from .utils import log, warn, write_json_atomic
 
+
+def plan_uniform_intervals(duration: float, target: float,
+                           clip_seconds: float) -> list[dict]:
+    """動画を等分し、各区間の中央からクリップを切り出す区間一覧を返す。
+
+    発話ベースの要約ができない動画 (--mode uniform) 用。クリップ数は
+    target / clip_seconds で決め、区間幅がクリップ長より狭い場合は
+    クリップ長を区間幅まで縮めて重複を避ける。
+    """
+    if duration <= target:
+        return [{"start": 0.0, "end": round(duration, 3),
+                 "duration": round(duration, 3)}]
+    n = max(1, round(target / clip_seconds))
+    window = duration / n
+    # target / n を上限にすることで、クリップ数の丸めや clip_seconds > target
+    # のケースでも合計が目標時間を超えないようにする
+    clip_len = min(target / n, window)
+    intervals = []
+    for i in range(n):
+        center = (i + 0.5) * window
+        start = max(0.0, center - clip_len / 2)
+        end = min(duration, start + clip_len)
+        intervals.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(end - start, 3),
+        })
+    return intervals
+
 # 重複判定に使う文字 3-gram Jaccard 類似度のしきい値と減衰率
 DUP_SIMILARITY_THRESHOLD = 0.55
 DUP_PENALTY_FACTOR = 0.35

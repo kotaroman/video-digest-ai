@@ -60,6 +60,12 @@ def parse_args(argv: list[str] | None = None) -> Config:
                         help="既存の中間ファイルを再利用して途中から再開する")
     parser.add_argument("--goal", default="",
                         help="重要度判断の目的 (例: '技術解説と設定方法を優先し、雑談を除外する')")
+    parser.add_argument("--mode", choices=["speech", "uniform", "timelapse"],
+                        default="speech",
+                        help="speech: 発話ベースの要約 / uniform: 等間隔サンプリング / "
+                             "timelapse: 全編を倍速圧縮 (音声なし)")
+    parser.add_argument("--clip-seconds", type=float, default=30.0,
+                        help="uniform モードで切り出す 1 クリップの長さ (秒)")
     parser.add_argument("--ollama-url", default=DEFAULT_OLLAMA_URL,
                         help="Ollama サーバーの URL")
     parser.add_argument("--score-batch-size", type=int, default=6,
@@ -72,6 +78,8 @@ def parse_args(argv: list[str] | None = None) -> Config:
         parser.error("--block-seconds は 10 以上を指定してください")
     if args.padding_before < 0 or args.padding_after < 0:
         parser.error("パディングは 0 以上を指定してください")
+    if args.clip_seconds < 5:
+        parser.error("--clip-seconds は 5 以上を指定してください")
 
     return Config(
         input_path=args.input,
@@ -89,12 +97,49 @@ def parse_args(argv: list[str] | None = None) -> Config:
         goal=args.goal,
         ollama_url=args.ollama_url,
         score_batch_size=args.score_batch_size,
+        mode=args.mode,
+        clip_seconds=args.clip_seconds,
     )
+
+
+def run_uniform_pipeline(config: Config) -> Path:
+    """発話に頼らず、全体から等間隔にクリップを切り出す (--mode uniform)"""
+    log("[1/3] Checking environment...")
+    environment.check_environment(config)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    log("")
+    log("[2/3] Planning clips...")
+    intervals = selector.plan_uniform_intervals(
+        config.video_duration, config.target_seconds, config.clip_seconds)
+    total = sum(iv["duration"] for iv in intervals)
+    spacing = config.video_duration / len(intervals)
+    log(f"  {len(intervals)} クリップ × 約 {intervals[0]['duration']:.0f} 秒 "
+        f"(約 {spacing:.0f} 秒間隔, 合計 {total:.1f} 秒)")
+
+    log("")
+    log("[3/3] Rendering summary...")
+    return video.render_summary(config, intervals)
+
+
+def run_timelapse_pipeline(config: Config) -> Path:
+    """全編を倍速圧縮したタイムラプスを生成する (--mode timelapse)"""
+    log("[1/2] Checking environment...")
+    environment.check_environment(config)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    log("")
+    log("[2/2] Rendering timelapse...")
+    return video.render_timelapse(config)
 
 
 def run_pipeline(config: Config) -> Path:
     if not config.input_path.is_file():
         raise VideoSummaryError(f"入力ファイルが存在しません: {config.input_path}")
+    if config.mode == "uniform":
+        return run_uniform_pipeline(config)
+    if config.mode == "timelapse":
+        return run_timelapse_pipeline(config)
     meta = StageMeta(config.meta_json, config.input_path)
 
     # 各ステージの生成条件 (これが変わったステージ以降は再計算される)

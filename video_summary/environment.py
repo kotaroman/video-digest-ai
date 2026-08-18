@@ -121,8 +121,22 @@ def check_ollama_model(url: str, model: str) -> None:
         )
 
 
+def _check_nvenc(config) -> None:
+    from . import video  # 循環 import 回避のため遅延 import
+
+    config.use_nvenc = video.detect_nvenc()
+    if config.use_nvenc:
+        log("  NVENC: 利用可能 (h264_nvenc でエンコード)")
+    else:
+        log("  NVENC: 利用不可 (libx264 にフォールバック)")
+
+
 def check_environment(config, need_ollama: bool = True) -> None:
-    """パイプライン実行前の環境チェック。config の実行時フィールドを更新する"""
+    """パイプライン実行前の環境チェック。config の実行時フィールドを更新する。
+
+    uniform / timelapse モードは文字起こしも採点も行わないため、
+    CUDA / Ollama のチェックを省略し、音声トラックも必須としない。
+    """
     from . import video  # 循環 import 回避のため遅延 import
 
     check_ffmpeg()
@@ -133,20 +147,35 @@ def check_environment(config, need_ollama: bool = True) -> None:
             f"入力ファイルに映像トラックがありません: {config.input_path}\n"
             "  音声のみのファイルからダイジェスト動画は生成できません。"
         )
-    if not info["has_audio"]:
+    if config.mode == "speech" and not info["has_audio"]:
         raise VideoSummaryError(
             f"入力動画に音声トラックがありません: {config.input_path}\n"
-            "  本ツールは音声の文字起こしを前提としています。"
+            "  本ツールは音声の文字起こしを前提としています。\n"
+            "  発話に頼らないダイジェストは --mode uniform / --mode timelapse で生成できます。"
         )
     config.video_duration = info["duration"]
+    config.has_audio = info["has_audio"]
     log(f"  入力動画: {config.input_path.name} "
-        f"({info['duration']:.1f} 秒, 音声トラックあり)")
+        f"({info['duration']:.1f} 秒, "
+        f"音声トラック{'あり' if info['has_audio'] else 'なし'})")
 
-    if config.video_duration <= config.target_seconds:
+    if config.mode == "timelapse":
+        if config.video_duration <= config.target_seconds:
+            raise VideoSummaryError(
+                f"動画の長さ ({config.video_duration:.0f} 秒) が目標時間 "
+                f"({config.target_seconds:.0f} 秒) 以下のため、"
+                "タイムラプスにできません。--minutes を短くしてください。"
+            )
+    elif config.video_duration <= config.target_seconds:
         warn(
             f"動画の長さ ({config.video_duration:.0f} 秒) が目標時間 "
             f"({config.target_seconds:.0f} 秒) 以下です。要約の意味がない可能性があります。"
         )
+
+    # uniform / timelapse は Whisper / Ollama を使わないため NVENC のみ確認する
+    if config.mode != "speech":
+        _check_nvenc(config)
+        return
 
     # GPU / CUDA
     if config.force_cpu:
@@ -172,12 +201,7 @@ def check_environment(config, need_ollama: bool = True) -> None:
             config.use_cuda = True
             log("  CUDA: 利用可能 (faster-whisper は GPU で実行)")
 
-    # NVENC
-    config.use_nvenc = video.detect_nvenc()
-    if config.use_nvenc:
-        log("  NVENC: 利用可能 (h264_nvenc でエンコード)")
-    else:
-        log("  NVENC: 利用不可 (libx264 にフォールバック)")
+    _check_nvenc(config)
 
     # Ollama (採点結果を再利用できる場合はチェック不要)
     if not need_ollama:
