@@ -1,0 +1,11 @@
+# 文字起こし (CTranslate2 ベース。PyTorch 不要)
+# RTX 50 系 (Blackwell) 対応のため ctranslate2 は 4.6.0 以上を明示
+faster-whisper>=1.1.1
+ctranslate2>=4.6.0
+
+# GPU 実行に必要な CUDA ランタイムライブラリ (CUDA Toolkit 本体は不要)
+nvidia-cublas-cu12>=12.4
+nvidia-cudnn-cu12>=9.1
+
+# Ollama ローカル API 呼び出し
+requests>=2.31
