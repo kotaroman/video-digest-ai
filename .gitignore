@@ -14,3 +14,7 @@ output/
 *.mkv
 *.avi
 *.mov
+
+# 個人用ファイル (コミットしない)
+CLAUDE.local.md
+.env
