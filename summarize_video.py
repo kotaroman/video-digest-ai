@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # 長時間動画から AI でダイジェスト動画を自動生成する CLI
 import argparse
+import signal
 import sys
 from pathlib import Path
 
@@ -248,16 +249,25 @@ def run_pipeline(config: Config) -> Path:
     return output_path
 
 
+def _raise_keyboard_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
     config = parse_args(argv)
+    # SIGTERM (通常の kill) でも例外経路を通すことで、finally での
+    # 後始末を実行し、子プロセスの ffmpeg を孤児にしない
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     try:
         output_path = run_pipeline(config)
     except VideoSummaryError as e:
         print(f"\nエラー: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("\n中断しました。--resume を付けて再実行すると途中から再開できます。",
-              file=sys.stderr)
+        # uniform / timelapse は中間ファイルを持たず --resume に対応しない
+        hint = ("--resume を付けて再実行すると途中から再開できます。"
+                if config.mode == "speech" else "")
+        print(f"\n中断しました。{hint}", file=sys.stderr)
         return 130
 
     log("")

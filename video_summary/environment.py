@@ -153,11 +153,18 @@ def check_environment(config, need_ollama: bool = True) -> None:
             "  本ツールは音声の文字起こしを前提としています。\n"
             "  発話に頼らないダイジェストは --mode uniform / --mode timelapse で生成できます。"
         )
-    config.video_duration = info["duration"]
+    # 処理の基準は映像ストリーム自体の長さにする。音声だけが後ろへ伸びる
+    # ファイルでコンテナ長を使うと、映像のない位置を切り出してしまう
+    config.video_duration = info["video_duration"]
     config.has_audio = info["has_audio"]
     log(f"  入力動画: {config.input_path.name} "
         f"({info['duration']:.1f} 秒, "
         f"音声トラック{'あり' if info['has_audio'] else 'なし'})")
+    if info["duration"] - info["video_duration"] > 1.0:
+        warn(
+            f"映像ストリーム ({info['video_duration']:.1f} 秒) がコンテナの長さ "
+            f"({info['duration']:.1f} 秒) より短いため、映像の長さを基準に処理します"
+        )
 
     if config.mode == "timelapse":
         if config.video_duration <= config.target_seconds:

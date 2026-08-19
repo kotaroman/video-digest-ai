@@ -31,7 +31,7 @@ def probe_video(path: Path) -> dict:
         [
             "ffprobe", "-v", "error",
             "-show_entries", "format=duration",
-            "-show_entries", "stream=codec_type",
+            "-show_entries", "stream=codec_type,duration",
             "-of", "json", str(path),
         ],
         f"動画情報の取得 ({path.name})",
@@ -45,8 +45,20 @@ def probe_video(path: Path) -> dict:
             f"動画情報を解析できません。動画ファイルが壊れている可能性があります: {path}"
         )
     codec_types = {s.get("codec_type") for s in data.get("streams", [])}
+    # 映像ストリーム自体の長さ。音声だけが後ろへ伸びるファイルではコンテナ長より
+    # 短くなり、映像のない位置を切り出さないための基準になる (TS 等で取得できない
+    # 場合はコンテナ長へフォールバック)
+    video_duration = duration
+    for s in data.get("streams", []):
+        if s.get("codec_type") == "video":
+            try:
+                video_duration = float(s["duration"])
+            except (KeyError, TypeError, ValueError):
+                pass
+            break
     return {
         "duration": duration,
+        "video_duration": video_duration,
         "has_audio": "audio" in codec_types,
         "has_video": "video" in codec_types,
     }
@@ -87,13 +99,16 @@ def _video_encode_args(use_nvenc: bool) -> list[str]:
 
 
 def _cut_one(input_path: Path, start: float, duration: float,
-             out_path: Path, use_nvenc: bool, with_audio: bool) -> None:
+             out_path: Path, use_nvenc: bool, with_audio: bool,
+             force_stereo: bool = False) -> None:
     # -ss を -i の前に置く入力シーク。再エンコードするためフレーム精度で切れる。
     # 音声も必ず再エンコードして全クリップのパラメータを揃え、結合時の
     # 音ズレ・無音化を防ぐ。
     if with_audio:
         audio_args = ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k",
                       "-ar", "48000"]
+        if force_stereo:
+            audio_args += ["-ac", "2"]
     else:
         audio_args = ["-an"]
     cmd = [
@@ -134,32 +149,70 @@ def cut_clips(input_path: Path, intervals: list[dict], clips_dir: Path,
     raise AssertionError("unreachable")
 
 
-def _probe_audio_channels(path: Path) -> int:
+def _probe_clip_audio(path: Path) -> tuple | None:
+    """先頭音声ストリームの構成 (channels, layout, sample_rate) を返す。
+
+    音声ストリーム自体がなければ None。クリップ間の構成比較に使う。
+    """
     result = _run(
         [
             "ffprobe", "-v", "error", "-select_streams", "a:0",
-            "-show_entries", "stream=channels", "-of", "json", str(path),
+            "-show_entries", "stream=channels,channel_layout,sample_rate",
+            "-of", "json", str(path),
         ],
         f"音声情報の取得 ({path.name})",
         timeout=60,
     )
     try:
-        return int(json.loads(result.stdout)["streams"][0]["channels"])
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
-        return 2
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        raise VideoSummaryError(f"音声情報を解析できません: {path}")
+    if not streams:
+        return None
+    s = streams[0]
+    return (s.get("channels"), s.get("channel_layout", ""),
+            s.get("sample_rate"))
+
+
+def _probe_audio_layout(path: Path) -> str:
+    """入力音声のチャンネルレイアウト文字列を返す (不明時は stereo)。
+
+    無音クリップのレイアウトを実クリップと一致させるために使う。レイアウト
+    不明の音声は FFmpeg がチャンネル数既定のレイアウトを補うため、それに
+    合わせて "Nc" (N チャンネル既定レイアウト) を返す。ffprobe は不明時に
+    channels=0 を返すことがあるので、その場合もステレオへ倒す。
+    """
+    try:
+        audio = _probe_clip_audio(path)
+    except VideoSummaryError:
+        audio = None
+    if audio is None:
+        return "stereo"
+    channels, layout, _ = audio
+    if isinstance(layout, str) and layout and layout != "unknown":
+        return layout
+    try:
+        n = int(channels)
+    except (TypeError, ValueError):
+        n = 0
+    return f"{n}c" if n > 0 else "stereo"
 
 
 def _cut_one_silent(input_path: Path, start: float, duration: float,
-                    out_path: Path, use_nvenc: bool, channels: int) -> None:
-    """音声パケットのない区間を、無音音声付きで切り出し直す"""
+                    out_path: Path, use_nvenc: bool, layout: str) -> None:
+    """音声パケットのない区間を、無音音声付きで切り出し直す。
+
+    無音のチャンネルレイアウトは実クリップ (入力の復号結果) と一致させる。
+    構成が食い違うと concat -c copy 後の AAC が復号できなくなる。
+    """
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-ss", f"{start:.3f}", "-i", str(input_path),
-        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+        "-f", "lavfi", "-i", f"anullsrc=r=48000:cl={layout}",
         "-t", f"{duration:.3f}",
         "-map", "0:v:0", "-map", "1:a:0",
         *_video_encode_args(use_nvenc),
-        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", str(channels),
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-shortest", "-movflags", "+faststart",
         str(out_path),
     ]
@@ -171,24 +224,39 @@ def _ensure_audio_consistency(input_path: Path, intervals: list[dict],
                               use_nvenc: bool) -> None:
     """全クリップの音声ストリーム構成を揃える。
 
-    音声トラックが動画全編をカバーしない入力では、音声パケットが 1 つも
-    ない区間のクリップに音声ストリーム自体が作られない。構成の混在した
-    クリップを concat (-c copy) すると先頭クリップの構成が採用され、
-    音声が無警告で失われるため、欠けたクリップへ無音音声を挿入する。
+    concat (-c copy) は先頭クリップの構成でコンテナを作るため、構成の
+    混在したクリップを渡すと残りのクリップの音声が無警告で壊れる。
+    - 音声のないクリップ (音声トラックが全編をカバーしない入力):
+      入力と同じレイアウトの無音音声を挿入する
+    - チャンネル構成の混在 (途中でステレオと 5.1 が切り替わる入力等):
+      全クリップの音声をステレオへ統一する
     """
-    has_audio = [probe_video(p)["has_audio"] for p in clip_paths]
-    if all(has_audio):
-        return
-    if not any(has_audio):
+    audios = [_probe_clip_audio(p) for p in clip_paths]
+    if all(a is None for a in audios):
         warn("どのクリップ位置にも音声パケットがないため、音声なしで出力します")
         return
-    warn("音声トラックが動画全編をカバーしていないため、"
-         "音声のない区間には無音を挿入します")
-    channels = _probe_audio_channels(input_path)
-    for iv, path, has in zip(intervals, clip_paths, has_audio):
-        if not has:
+    silent_indices = [i for i, a in enumerate(audios) if a is None]
+    if silent_indices:
+        warn("音声トラックが動画全編をカバーしていないため、"
+             "音声のない区間には無音を挿入します")
+        layout = _probe_audio_layout(input_path)
+        for i in silent_indices:
+            iv = intervals[i]
             _cut_one_silent(input_path, iv["start"], iv["end"] - iv["start"],
-                            path, use_nvenc, channels)
+                            clip_paths[i], use_nvenc, layout)
+            audios[i] = _probe_clip_audio(clip_paths[i])
+    if len(set(audios)) > 1:
+        warn("クリップ間で音声のチャンネル構成が一致しないため、"
+             "全クリップの音声をステレオへ統一します")
+        silent = set(silent_indices)
+        for i, iv in enumerate(intervals):
+            duration = iv["end"] - iv["start"]
+            if i in silent:
+                _cut_one_silent(input_path, iv["start"], duration,
+                                clip_paths[i], use_nvenc, "stereo")
+            else:
+                _cut_one(input_path, iv["start"], duration, clip_paths[i],
+                         use_nvenc, with_audio=True, force_stereo=True)
 
 
 def _cut_all(input_path: Path, intervals: list[dict], clips_dir: Path,
@@ -243,6 +311,14 @@ def render_summary(config, intervals: list[dict]) -> Path:
         config.input_path, intervals, config.clips_dir, config.use_nvenc,
         with_audio=config.has_audio,
     )
+    # 映像のないクリップが混ざると concat のストリーム対応がずれ、
+    # 再生不能なファイルが「Done」のまま生成されてしまうため事前に検査する
+    broken = [p.name for p in clip_paths if not probe_video(p)["has_video"]]
+    if broken:
+        raise VideoSummaryError(
+            f"映像フレームのないクリップが生成されました: {', '.join(broken)}\n"
+            "  入力動画の映像ストリームに欠損がある可能性があります。"
+        )
     concat_clips(clip_paths, config.summary_path)
     if not config.keep_clips:
         shutil.rmtree(config.clips_dir)
@@ -261,12 +337,28 @@ def render_timelapse(config) -> Path:
     for nvenc in encoders:
         try:
             _encode_timelapse(config, factor, nvenc)
-            return config.summary_path
-        except VideoSummaryError:
-            if not nvenc:
+            break
+        except VideoSummaryError as e:
+            # NVENC 起因と判定できた失敗のみ libx264 でやり直す。シグナル停止や
+            # ディスク・権限エラーまで NVENC のせいにすると、誤った診断のまま
+            # 全編をもう一度エンコードしてしまう
+            if not nvenc or not getattr(e, "nvenc_failure", False):
                 raise
             warn("h264_nvenc でのエンコードに失敗したため、libx264 でやり直します")
-    raise AssertionError("unreachable")
+    # フィルタ結果が 0 フレームでも ffmpeg は正常終了するため、
+    # 空の MP4 を「Done」として返さないよう出力を検証する。
+    # ストリームが 1 本もない場合は probe 自体が失敗するため、それも同扱いにする
+    try:
+        info = probe_video(config.summary_path)
+        valid = info["has_video"] and info["duration"] > 0
+    except VideoSummaryError:
+        valid = False
+    if not valid:
+        raise VideoSummaryError(
+            "タイムラプスの出力に映像フレームがありません。\n"
+            "  --minutes が短すぎて 1 フレームも生成されなかった可能性があります。"
+        )
+    return config.summary_path
 
 
 def _encode_timelapse(config, factor: float, use_nvenc: bool) -> None:
@@ -316,6 +408,16 @@ def _encode_timelapse(config, factor: float, use_nvenc: bool) -> None:
                     proc.wait()
         if proc.returncode != 0:
             errf.seek(0)
-            stderr_tail = "\n".join(errf.read().strip().splitlines()[-10:])
-            raise VideoSummaryError(
-                f"タイムラプスの生成に失敗しました:\n{stderr_tail}")
+            stderr_text = errf.read().strip()
+            stderr_tail = "\n".join(stderr_text.splitlines()[-10:])
+            err = VideoSummaryError(
+                f"タイムラプスの生成に失敗しました "
+                f"(returncode={proc.returncode}):\n{stderr_tail}")
+            # 負値はシグナルによる強制終了、255 は ffmpeg 自身のシグナル捕捉。
+            # それ以外でエンコーダ関連の出力があるときだけ NVENC 起因とみなす
+            lower = stderr_text.lower()
+            err.nvenc_failure = (
+                proc.returncode > 0 and proc.returncode != 255
+                and ("nvenc" in lower or "cuda" in lower or "cuvid" in lower)
+            )
+            raise err
