@@ -5,6 +5,7 @@ import signal
 import sys
 from pathlib import Path
 
+from video_summary import __version__
 from video_summary import blocks as blocks_mod
 from video_summary import environment, scoring, selector, transcription, video
 from video_summary.config import DEFAULT_OLLAMA_URL, Config
@@ -37,6 +38,9 @@ def parse_args(argv: list[str] | None = None) -> Config:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("input", type=Path, help="入力動画ファイル (MP4 等)")
+    parser.add_argument("--version", action="version",
+                        version=f"video-digest-ai {__version__}",
+                        help="バージョンを表示して終了する")
     parser.add_argument("--minutes", type=float, default=10.0,
                         help="ダイジェストの目標時間 (分)")
     parser.add_argument("--whisper-model", default="large-v3",

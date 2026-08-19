@@ -92,6 +92,7 @@ python3 -m venv .venv
 | `--keep-clips` | off | 個別クリップ(output/clips/)を残す |
 | `--force-cpu` | off | GPUを使わず文字起こし(低速) |
 | `--resume` | off | 中間ファイルを再利用して途中から再開(speechモードのみ) |
+| `--version` | - | バージョンを表示して終了 |
 
 ### goal で判断基準を変える
 
